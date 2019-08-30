@@ -65,10 +65,13 @@ class Linkedin(object):
                 }).text.strip()
 
             temp['date'] = temp_job.find('time')['datetime']
+
             temp[
                 'url'] = 'https://id.linkedin.com/jobs-guest/jobs/api/jobPosting/{}?refId={}'.format(
                     temp_job['data-id'], temp_job['data-search-id'])
+
             temp['_id'] = hashlib.md5(temp['url'].encode()).hexdigest()
+
             result.append(temp)
         return result
 
@@ -111,10 +114,19 @@ class Linkedin(object):
 
         return job
 
+    async def get_detail(self, jobs):
+        chunk_size = 5
+        for chunked_jobs in self.chunks(jobs, chunk_size):
+            detail_job_tasks = await asyncio.gather(
+                *[self.fetch_page(job['url']) for job in chunked_jobs])
+            for counter, detail_job in enumerate(detail_job_tasks):
+                if detail_job is not None:
+                    pprint(
+                        self.parse_detail(chunked_jobs[counter], detail_job))
+
     async def index(self):
         start = 0
         size = 25
-        chunk_size = 5
         stop = False
         while not stop:
             base_url = 'https://id.linkedin.com/jobs-guest/jobs/api/jobPostings/jobs?location=Indonesia&redirect=false&position=1&pageNum=0&f_TP=1&start={}'.format(
@@ -126,17 +138,7 @@ class Linkedin(object):
                 if len(jobs) == 0:
                     stop = True
                 else:
-                    for chunked_jobs in self.chunks(jobs, chunk_size):
-                        detail_job_tasks = await asyncio.gather(
-                            *[
-                                self.fetch_page(job['url'])
-                                for job in chunked_jobs
-                            ])
-                        for counter, detail_job in enumerate(detail_job_tasks):
-                            if detail_job is not None:
-                                pprint(
-                                    self.parse_detail(chunked_jobs[counter],
-                                                      detail_job))
+                    await self.get_detail(jobs)
 
                 start += size
 
