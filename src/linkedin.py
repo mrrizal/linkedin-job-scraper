@@ -1,11 +1,13 @@
 import re
 import os
 import sys
+import time
 import inspect
 import aiohttp
 import asyncio
 import hashlib
-from pprint import pprint
+import argparse
+from dateutil.parser import parse
 from bs4 import BeautifulSoup
 current_dir = os.path.dirname(
     os.path.abspath(inspect.getfile(inspect.currentframe())))
@@ -13,10 +15,13 @@ parent_dir = os.path.dirname(current_dir)
 sys.path.insert(0, parent_dir)
 from models.mongo import Mongo
 
+os.environ['TZ'] = 'Asia/Jakarta'
+time.tzset()
 
-class Linkedin(object):
+
+class Linkedin(Mongo):
     def __init__(self):
-        pass
+        super().__init__()
 
     async def fetch_page(self, url, json_=False):
         async with aiohttp.ClientSession() as session:
@@ -66,11 +71,14 @@ class Linkedin(object):
 
             temp['date'] = temp_job.find('time')['datetime']
 
+            temp['timestamp'] = int(parse(temp['date']).strftime('%s'))
+
             temp[
                 'url'] = 'https://id.linkedin.com/jobs-guest/jobs/api/jobPosting/{}?refId={}'.format(
                     temp_job['data-id'], temp_job['data-search-id'])
 
-            temp['_id'] = hashlib.md5(temp['url'].encode()).hexdigest()
+            _id = re.sub(r'\?refId=.+$', '', temp['url'])
+            temp['_id'] = hashlib.md5(_id.encode('utf-8')).hexdigest()
 
             result.append(temp)
         return result
@@ -114,17 +122,22 @@ class Linkedin(object):
 
         return job
 
-    async def get_detail(self, jobs):
+    async def get_detail(self, jobs, write=False):
         chunk_size = 5
         for chunked_jobs in self.chunks(jobs, chunk_size):
             detail_job_tasks = await asyncio.gather(
                 *[self.fetch_page(job['url']) for job in chunked_jobs])
+
+            temp = []
             for counter, detail_job in enumerate(detail_job_tasks):
                 if detail_job is not None:
-                    pprint(
+                    temp.append(
                         self.parse_detail(chunked_jobs[counter], detail_job))
 
-    async def index(self):
+            if write:
+                await asyncio.gather(*[self.insert_data(job) for job in temp])
+
+    async def index(self, write=False):
         start = 0
         size = 25
         stop = False
@@ -138,13 +151,27 @@ class Linkedin(object):
                 if len(jobs) == 0:
                     stop = True
                 else:
-                    await self.get_detail(jobs)
+                    await self.get_detail(jobs, write)
 
                 start += size
 
 
 if __name__ == '__main__':
-    mongo = Mongo()
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--create-index', action='store_true')
+    parser.add_argument('--drop-index', action='store_true')
+    parser.add_argument('--crawl', action='store_true')
+    parser.add_argument('--write', action='store_true')
+    args = parser.parse_args()
+
     linkedin = Linkedin()
     loop = asyncio.get_event_loop()
-    loop.run_until_complete(linkedin.index())
+
+    if args.create_index:
+        loop.run_until_complete(linkedin.create_jobs_index())
+
+    if args.drop_index and not args.create_index:
+        loop.run_until_complete(linkedin.drop_jobs_index())
+
+    if args.crawl:
+        loop.run_until_complete(linkedin.index(args.write))
